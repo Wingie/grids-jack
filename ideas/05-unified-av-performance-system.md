@@ -103,31 +103,72 @@ everything stays in sync via Ableton Link.
                     └──────────────────────────┘
 ```
 
+## Important Platform Note: TouchDesigner Does NOT Run on Linux
+
+TouchDesigner is Windows-only (and macOS). It has no Linux build. This means
+the multi-machine setup described in the "Ableton Live on Linux" section below
+is likely **required** for a Linux-based grids-jack workflow -- you'll need a
+Windows machine for TouchDesigner.
+
+**Linux alternatives for visuals** (if you want everything on one Linux machine):
+- **openFrameworks** with ofxOsc -- receives OSC triggers, C++ like grids-jack
+- **Processing** with oscP5 -- quick prototyping, good for generative art
+- **Pure Data + GEM** -- visual patching, native OSC/MIDI support
+- **Godot Engine** -- game engine with OSC plugins, real-time 3D
+
+All of these can receive grids-jack's OSC output on port 7770 identically to
+how TouchDesigner would.
+
 ## TDAbleton: Ableton-to-TouchDesigner Bridge
 
-[TDAbleton](https://docs.derivative.ca/TDAbleton) is a built-in integration
-that connects Ableton Live to TouchDesigner via MIDI Remote Scripts + Max for
-Live devices communicating over OSC/UDP.
+[TDAbleton](https://docs.derivative.ca/TDAbleton) is a three-layer system:
 
-### What It Provides
+1. **MIDI Remote Script** (Python) -- installed in Ableton's MIDI Remote Scripts
+   folder. Uses the Live Object Model (LOM) to read/write nearly everything in
+   a Live set. Communicates with TD over OSC/UDP.
 
-| TDAbleton Component | What It Sends to TD | Use Case |
-|---------------------|---------------------|----------|
-| `abletonLevel` | Track audio levels (spectrum analysis) | Audio-reactive visuals from the full Ableton mix |
-| `abletonMapper` | Device parameters (knobs, faders) | Map Ableton effect params to visual properties |
-| `abletonSong` | Transport state, tempo, scenes | Global scene management |
-| `abletonRack` | Rack macro values | Control visuals via Ableton Rack macros |
+2. **Max for Live devices** -- placed on tracks for data the Remote Script
+   can't access efficiently:
+   - **TDA Master** -- on Master track, manages connection, shows IP/ports
+   - **TDA Level** -- per-track volume metering via OSC
+   - **TDA Rack OSC** -- fast bidirectional control of up to 16 rack macros
+   - **TDA MIDI** -- routes MIDI note/CC/program change data
+   - **TDA_Ignore** -- excludes tracks from scanning (performance optimization)
+
+3. **TouchDesigner COMP nodes** (drag-and-drop from TDAbleton palette):
+
+| TD Component | What It Provides | Direction |
+|---|---|---|
+| `abletonSong` | Transport, scenes, cue points, tempo, beat CHOP | Read + Write |
+| `abletonTrack` | Clip slots, playing slot, output meters | Read + Write |
+| `abletonDeviceParameters` | All params on a device | Read only |
+| `abletonRack` | 16 rack macros via fast OSC (bypasses Remote Script) | Read + Write |
+| `abletonLevel` | Volume levels + spectrum (with TDA Audio Analyzer Rack) | Read only |
+| `abletonMIDI` | MIDI events with callbacks | Read + Write |
 
 ### TDAbleton Caveats
 
 - **Undo flooding**: Changing Ableton values FROM TouchDesigner creates undo
   steps in Live, flooding the undo history. Use TDA_Rack devices to avoid this.
-- **Duplicate names**: Duplicate track/device names cause confusion in the
-  routing system. Give everything unique names.
+- **Duplicate names**: TDAbleton uses names for LOM navigation. Duplicate
+  track/device names cause ambiguity and bugs. Give everything unique names.
 - **Large Live Sets**: Can overload the OSC connection, especially on macOS.
   Use `TDA_Ignore` devices on tracks you don't need in TD.
-- **Bidirectional**: TD can also control Ableton (push parameters back), but
-  this should be used sparingly due to the undo issue.
+- **Output meter bug**: `output_meter_left/right` on `abletonTrack` only
+  updates when meters are **visible in the Ableton GUI**. Minimizing a group
+  stops updates. Use `abletonLevel` with TDA Level M4L devices instead.
+- **M4L loading error**: Starting Ableton via TDAbleton's "Start" button can
+  fail to load M4L devices. Start Ableton separately, then connect.
+- **Version pinning**: TDAbleton versions are tightly coupled to both TD and
+  Ableton versions. Don't mix versions.
+
+### AbletonOSC as Alternative/Complement
+
+[AbletonOSC](https://github.com/ideoforms/AbletonOSC) is a lighter-weight
+MIDI Remote Script exposing the full LOM over OSC without Max for Live.
+Listens on port 11000, replies on 11001. Useful for programmatic control from
+grids-jack directly (e.g., triggering scenes, reading tempo) without needing
+TouchDesigner in the loop. Can coexist with TDAbleton.
 
 ## Port Allocation Plan
 
@@ -157,25 +198,55 @@ Ableton Live does not run natively on Linux. Options:
 ### Option A: Ableton via Wine + wineASIO (Same Machine)
 
 - Audio works well via wineASIO → JACK
+- At 256 samples: ~10.7ms latency, stable. At 64 samples: 4ms possible with
+  tuned systems (users report years of professional use)
 - MIDI has known issues (JACK MIDI note-on/off may not work reliably)
 - Workaround: Use `a2jmidid` bridge or `snd-virmidi` for MIDI routing
-- TDAbleton: Untested under Wine, may work since it uses standard OSC
+- **Pin your Wine version** once working -- Wine-Staging updates frequently
+  break wineASIO and VST compatibility
+- TDAbleton Remote Scripts work under Wine (they run inside Ableton's Python)
 
 ### Option B: Multi-Machine (Recommended for Performance)
 
-- **Machine 1 (Linux)**: grids-jack + TouchDesigner
-- **Machine 2 (Windows/macOS)**: Ableton Live 12 + Pocket Scion
-- **Network**: Ethernet cable between machines
-- **Sync**: Ableton Link works over network (auto-discovery via UDP multicast)
-- **MIDI**: Network MIDI via `qmidinet` or `rtpMIDI`
-- **OSC**: All OSC messages work over network (just change target IP)
-- **Video**: TouchDesigner NDI Out for remote monitoring (10-60ms latency)
+Since neither Ableton nor TouchDesigner runs natively on Linux, the most
+reliable setup is:
+
+- **Machine 1 (Linux)**: grids-jack (native JACK)
+- **Machine 2 (Windows)**: Ableton Live 12 + TouchDesigner + Pocket Scion
+- **Network**: Ethernet cable between machines (not WiFi -- causes xruns)
+- **Sync**: Ableton Link over network (auto-discovery, < 1ms)
+- **MIDI**: Network MIDI via `rtpmidid` (RTP-MIDI with journaling) or `qmidinet`
+- **OSC**: grids-jack sends triggers to TD over network (just change target IP)
+- **Audio**: Both machines into a hardware mixer (avoids network audio latency)
+
+```
+Machine A (Linux)              Machine B (Windows)
+┌───────────────────┐         ┌──────────────────────┐
+│ grids-jack        │         │ Ableton Live 12      │
+│  - Link peer      │◄─Link──►│  - TDAbleton RS      │
+│  - OSC out (7770) │──OSC───►│  - Pocket Scion MIDI │
+│  - MIDI out       │──MIDI──►│  - Drum Rack (ch 10) │
+│                   │         │                      │
+│                   │         │ TouchDesigner         │
+│                   │──OSC───►│  - OSC In CHOP (7770)│
+│                   │         │  - Link CHOP          │
+│                   │         │  - TDAbleton COMPs    │
+│                   │         │  - Spout → projector  │
+└────┬──────────────┘         └──────┬───────────────┘
+     │ audio out                     │ audio out
+     ▼                               ▼
+  ┌──────────────────────────────────────┐
+  │        Hardware Mixer                │
+  └──────────────────────────────────────┘
+```
 
 ### Option C: Bitwig Studio on Linux (Alternative DAW)
 
-- Native Linux support, JACK integration
-- Supports Ableton Link
-- Different plugin ecosystem but handles MIDI routing well
+- Native Linux support (including ARM), JACK integration
+- Built-in Ableton Link support
+- OSC via [DrivenByMoss](https://github.com/git-moss/DrivenByMoss) controller scripts
+- Clip launcher, modular sound design, VST3/CLAP hosting
+- Users report stable live performance on Linux
 
 ## Multi-Machine Latency Budget
 
@@ -272,35 +343,47 @@ different because the plant's signals are never the same twice.
 - Create startup script that launches all components
 - Document the setup
 
-## Configuration File (Phase 4)
+## Configuration Strategy
 
-```json
-{
-  "osc": {
-    "listen_port": 10361,
-    "send_host": "127.0.0.1",
-    "send_port": 7770,
-    "pocket_scion_mappings": {
-      "/mean": { "param": "pattern_x", "min": 200, "max": 800, "range": [0, 255] },
-      "/delta": { "param": "pattern_y", "min": 0, "max": 50, "range": [0, 255] },
-      "/deviation": { "param": "randomness", "min": 0, "max": 10, "range": [0, 255] },
-      "/variance": { "param": "humanize", "min": 0, "max": 100, "range": [0.0, 1.0] }
-    }
-  },
-  "link": {
-    "enabled": true,
-    "initial_bpm": 120,
-    "quantum": 4.0
-  },
-  "midi": {
-    "enabled": true,
-    "channel": 10,
-    "velocity_low": 49,
-    "velocity_high": 127,
-    "note_duration_ms": 50
-  }
-}
+Following patterns from TidalCycles/SuperCollider, use a layered approach:
+
+1. **Compiled defaults** (always work for single-machine use)
+2. **Config file** (INI/TOML, text-editable, git-friendly)
+3. **Environment variables** (override config -- grids-jack already reads
+   `PARTS`, `STEPS`, `LFO`, `VERBOSE` from env)
+4. **CLI flags** (override everything -- `-O`, `-T`, `-L`, `-M`, `-b`)
+
+```ini
+# ~/.config/grids-jack/config.toml
+[osc]
+listen_port = 10361
+send_target = "192.168.1.50:7770"
+
+[osc.pocket_scion_mappings]
+mean = { param = "pattern_x", input_min = 200, input_max = 800, output_range = [0, 255] }
+delta = { param = "pattern_y", input_min = 0, input_max = 50, output_range = [0, 255] }
+deviation = { param = "randomness", input_min = 0, input_max = 10, output_range = [0, 255] }
+
+[link]
+enabled = true
+initial_bpm = 120
+quantum = 4.0
+
+[midi]
+enabled = true
+channel = 10
+velocity_low = 49
+velocity_high = 127
+note_duration_ms = 50
+
+[audio]
+sample_dir = "/home/user/samples/garden-set"
+parts = 6
 ```
+
+For parsing, [inih](https://github.com/benhoyt/inih) (C, ~600 lines) or
+[toml11](https://github.com/ToruNiina/toml11) (header-only C++11) are
+lightweight options.
 
 ## Why This Is The Endgame
 
@@ -322,10 +405,18 @@ different because the plant's signals are never the same twice.
 ## References
 
 - [TDAbleton documentation](https://docs.derivative.ca/TDAbleton)
+- [TDAbleton system components](https://docs.derivative.ca/TDAbleton_System_Components)
 - [TDAbleton user guide](https://derivative.ca/UserGuide/TDAbleton)
-- [Ableton + TouchDesigner AV setup (AllTD)](https://alltd.org/ableton-touchdesigner-how-to-build-audio-visual-live-set/)
-- [Ableton Link overview](https://ableton.github.io/link/)
+- [Cyanea Studio TDAbleton guide](https://www.cyaneastudio.com/blog/touchdesigner-and-ableton-a-beginners-guide-to-tdableton)
 - [AbletonOSC (full LOM via OSC)](https://github.com/ideoforms/AbletonOSC)
+- [AbletonOSC NIME paper](https://nime.org/proceedings/2023/nime2023_60.pdf)
+- [Ableton Link overview](https://ableton.github.io/link/)
+- [Ableton Link FAQ](https://help.ableton.com/hc/en-us/articles/209776125)
+- [Ableton on Linux via Wine](https://github.com/korewaChino/live-on-linux)
+- [DrivenByMoss (Bitwig OSC)](https://github.com/git-moss/DrivenByMoss)
+- [rtpmidid (network MIDI on Linux)](https://github.com/davidmoreno/rtpmidid)
 - [Pocket Scion official site](https://pocketscion.com/)
-- [Spout for Windows (GPU texture sharing)](https://spout.zeal.co/)
+- [TidalCycles MIDI/OSC config](https://tidalcycles.org/docs/configuration/MIDIOSC/midi/)
+- [Ross Bencina -- Realtime Audio Programming 101](http://www.rossbencina.com/code/real-time-audio-programming-101-time-waits-for-nothing)
+- [Spout for Windows](https://spout.zeal.co/)
 - [NDI SDK](https://ndi.video/for-developers/ndi-sdk/)
